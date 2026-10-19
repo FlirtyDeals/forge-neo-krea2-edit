@@ -36,7 +36,7 @@ Make this person wear a white spacesuits with helmets. Keep the person's identit
 | Steps | 10 |
 | CFG | 1 |
 | Size | 2 megapixels or less. At least keep the same aspect ratio as your photo, the exact pixel size does not matter |
-| Grounding resolution | 768 (lower follows the edit more, higher keeps the face more) |
+| Grounding resolution | 768 default. Lower follows the edit more: 640, 512, 384. Higher keeps the face more: 1024, 1280, 1536 |
 
 ## Credits and license
 
