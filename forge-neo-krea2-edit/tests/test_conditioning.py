@@ -1,0 +1,223 @@
+import unittest
+from contextlib import nullcontext
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import torch
+
+from lib_krea2_edit.conditioning import (
+    GroundedQwenEngine,
+    expand_grounded_multipliers,
+    forge_qwen_vision_attention_compat,
+    grounded_empty_prompt_compat,
+    grounded_token_multiplier_compat,
+    install_grounded_setup,
+)
+
+
+class RecordingEngine:
+    marker = "delegated"
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, texts, images=None):
+        self.calls.append((texts, images))
+        return texts
+
+
+class TemplateRecordingEngine(RecordingEngine):
+    def __init__(self):
+        super().__init__()
+        self.image_template = "original {}"
+        self.templates = []
+
+    def __call__(self, texts, images=None):
+        self.templates.append(self.image_template)
+        return super().__call__(texts, images)
+
+
+class RecordingEmphasis:
+    def after_transformers(self):
+        self.z = self.z * self.multipliers.unsqueeze(-1)
+
+
+class FakeGroundedEngine:
+    def __init__(self):
+        self.emphasis = RecordingEmphasis()
+        self.process_tokens = self.original_process_tokens
+        self.text_encoder = self.encode
+        self.encoder_call = None
+
+    @staticmethod
+    def original_process_tokens(batch_tokens, batch_multipliers):
+        return "original"
+
+    @staticmethod
+    def process_embeds(batch_tokens):
+        embeds = torch.ones(1, 7, 2)
+        mask = torch.ones(1, 7, dtype=torch.long)
+        count = [7]
+        info = [{"type": "image", "index": 1, "size": 4}]
+        return embeds, mask, count, info
+
+    def encode(self, *args, **kwargs):
+        self.encoder_call = kwargs
+        return None, kwargs["embeds"]
+
+
+class FakeModel:
+    def __init__(self, engine):
+        self.text_processing_engine_qwen = engine
+
+
+class FakeProcessing:
+    def __init__(self, engine):
+        self.sd_model = FakeModel(engine)
+        self.encoded = None
+
+    @staticmethod
+    def cached_params(prompt):
+        return (prompt,)
+
+    def setup_conds(self):
+        self.encoded = self.sd_model.text_processing_engine_qwen(
+            ["positive", "negative"]
+        )
+
+
+class ConditioningTests(unittest.TestCase):
+    def test_empty_grounded_prompt_keeps_ordered_image_placeholders(self):
+        captured = []
+
+        def original_tokenize(texts, images=None):
+            return [[0]]
+
+        def tokenizer(texts):
+            captured.extend(texts)
+            return {"input_ids": [[1]]}
+
+        vision = "<|vision_start|><|image_pad|><|vision_end|>"
+        engine = SimpleNamespace(
+            tokenize=original_tokenize,
+            tokenizer=tokenizer,
+            image_template=f"<user>{vision}{{}}</user>",
+            vision_block=vision,
+        )
+        with grounded_empty_prompt_compat(engine):
+            engine.tokenize([""], images=[object(), object()])
+        self.assertEqual(captured[0].count(vision), 2)
+        self.assertEqual(engine.tokenize(["fallback"]), [[0]])
+
+    def test_image_placeholder_multiplier_expands_to_vision_token_count(self):
+        tokens = [151644, {"type": "image"}, 123, 151645]
+        multipliers = [1.0, 0.75, 1.2, 1.0]
+        info = [{"type": "image", "index": 1, "size": 4}]
+        expanded = expand_grounded_multipliers(tokens, multipliers, info)
+        self.assertEqual(expanded, [1.0, 0.75, 0.75, 0.75, 0.75, 1.2, 1.0])
+
+    def test_observed_qwen_expansion_matches_embedding_length(self):
+        tokens = [0] * 138 + [{"type": "image"}]
+        multipliers = [1.0] * 139
+        info = [{"type": "image", "index": 138, "size": 456}]
+        expanded = expand_grounded_multipliers(tokens, multipliers, info)
+        self.assertEqual(len(expanded), 594)
+
+    def test_grounded_process_tokens_uses_expanded_weights_and_restores(self):
+        engine = FakeGroundedEngine()
+        original = engine.process_tokens
+        tokens = [[1, {"type": "image"}, 2, 3]]
+        multipliers = [[1.0, 0.5, 2.0, 1.0]]
+        with grounded_token_multiplier_compat(engine, tap_layers=[2, 5]):
+            output = engine.process_tokens(tokens, multipliers)
+        self.assertEqual(tuple(output.shape), (1, 7, 2))
+        self.assertEqual(output[0, :, 0].tolist(), [1.0, 0.5, 0.5, 0.5, 0.5, 2.0, 1.0])
+        self.assertEqual(engine.encoder_call["intermediate_output"], [2, 5])
+        self.assertIs(engine.process_tokens, original)
+
+    def test_proxy_injects_image_and_delegates_attributes(self):
+        engine = RecordingEngine()
+        image = object()
+        proxy = GroundedQwenEngine(engine, image)
+        with patch(
+            "lib_krea2_edit.conditioning.grounded_token_multiplier_compat",
+            return_value=nullcontext(),
+        ):
+            proxy(["prompt"])
+        self.assertEqual(engine.calls, [(["prompt"], [image])])
+        self.assertEqual(proxy.marker, "delegated")
+
+    def test_proxy_injects_two_images_in_order(self):
+        engine = RecordingEngine()
+        images = [object(), object()]
+        proxy = GroundedQwenEngine(engine, images)
+        with patch(
+            "lib_krea2_edit.conditioning.grounded_token_multiplier_compat",
+            return_value=nullcontext(),
+        ):
+            proxy(["prompt"])
+        self.assertEqual(engine.calls, [(["prompt"], images)])
+
+    def test_system_prompt_override_is_scoped(self):
+        engine = TemplateRecordingEngine()
+        proxy = GroundedQwenEngine(engine, [object()], "focus on {facial} identity")
+        with patch(
+            "lib_krea2_edit.conditioning.grounded_token_multiplier_compat",
+            return_value=nullcontext(),
+        ):
+            proxy(["prompt"])
+        self.assertIn("focus on {{facial}} identity", engine.templates[0])
+        self.assertEqual(engine.image_template, "original {}")
+
+    def test_setup_swap_is_scoped_and_idempotent(self):
+        engine = RecordingEngine()
+        image = object()
+        another_image = object()
+        processing = FakeProcessing(engine)
+        original_cache_params = processing.cached_params("same prompt")
+        install_grounded_setup(processing, image)
+        grounded_cache_params = processing.cached_params("same prompt")
+        install_grounded_setup(processing, another_image)
+        with (
+            patch(
+                "lib_krea2_edit.conditioning.forge_qwen_vision_attention_compat",
+                return_value=nullcontext(),
+            ),
+            patch(
+                "lib_krea2_edit.conditioning.grounded_token_multiplier_compat",
+                return_value=nullcontext(),
+            ),
+        ):
+            processing.setup_conds()
+        self.assertIs(processing.sd_model.text_processing_engine_qwen, engine)
+        self.assertEqual(engine.calls, [(["positive", "negative"], [image])])
+        self.assertEqual(grounded_cache_params, processing.cached_params("same prompt"))
+        self.assertNotEqual(original_cache_params, grounded_cache_params)
+
+    def test_separate_reference_jobs_do_not_share_conditioning_cache(self):
+        image = object()
+        another_image = object()
+        first = FakeProcessing(RecordingEngine())
+        second = FakeProcessing(RecordingEngine())
+        install_grounded_setup(first, image)
+        install_grounded_setup(second, another_image)
+
+        self.assertNotEqual(
+            first.cached_params("same prompt"),
+            second.cached_params("same prompt"),
+        )
+
+    def test_qwen_vision_attention_adapter_returns_forge_backend_and_restores(self):
+        original = object()
+        selected_attention = object()
+        qwen_module = SimpleNamespace(attention_function=original)
+        with forge_qwen_vision_attention_compat(qwen_module, selected_attention):
+            selected = qwen_module.attention_function(
+                "cpu", mask=False, small_input=True
+            )
+            self.assertIs(selected, selected_attention)
+        self.assertIs(qwen_module.attention_function, original)
+
+
+if __name__ == "__main__":
+    unittest.main()
