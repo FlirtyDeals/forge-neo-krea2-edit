@@ -35,7 +35,7 @@ Make this person wear a white spacesuits with helmets. Keep the person's identit
 | Model | Krea 2 Turbo |
 | Steps | 10 |
 | CFG | 1 |
-| Size | Any size up to 2 megapixels. Pick the closest aspect ratio to your photo, it does not need to match exactly |
+| Size | 2 megapixels or less. At least keep the same aspect ratio as your photo, the exact pixel size does not matter |
 | Grounding resolution | 768 (lower follows the edit more, higher keeps the face more) |
 
 ## Credits and license
