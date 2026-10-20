@@ -1,7 +1,6 @@
 # Krea 2 Identity Edit for Forge Neo
 
-![w](image_example.png)
-
+![image example](example_image.png)
 Forge Neo extension that lets the Krea 2 Identity Edit LoRA edit an existing photo (for example, change the clothes) while keeping the person's face.
 
 This is a fork of [opparco/sd-forge-krea2-edit](https://github.com/opparco/sd-forge-krea2-edit). It includes the compatibility fixes for Forge Neo.
