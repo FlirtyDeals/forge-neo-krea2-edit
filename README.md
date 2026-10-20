@@ -1,6 +1,6 @@
 # Krea 2 Identity Edit for Forge Neo
 
-![](image_example.png)
+![w](image_example.png)
 
 Forge Neo extension that lets the Krea 2 Identity Edit LoRA edit an existing photo (for example, change the clothes) while keeping the person's face.
 
