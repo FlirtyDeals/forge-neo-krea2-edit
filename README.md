@@ -23,7 +23,7 @@ Forge Neo extension that lets the Krea 2 Identity Edit LoRA edit an existing pho
 5. Write the edit as an instruction and add the LoRA tag:
 
 ```
-Henry Cavill as an evil ghost Superman, all green, floating in the dark. <lora:krea2_identity_edit_v1_2:1>
+Henry Cavill as an evil ghost Superman, all green, in the dark. <lora:krea2_identity_edit_v1_2:1>
 ```
 
 6. Generate.
